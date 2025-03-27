@@ -1,0 +1,463 @@
+shein-daily-picker/
+├── manifest.json
+{
+  "manifest_version": 3,
+  "name": "SHEIN每日选品助手",
+  "version": "1.0.2",
+  "description": "精确到每日的SHEIN选品数据分析工具",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": "icons/icon48.png"
+  },
+  "permissions": ["storage", "activeTab"],
+  "content_scripts": [
+    {
+      "matches": ["https://*.shein.com/*"],
+      "js": ["content/content.js"],
+      "css": ["content/content.css"]
+    }
+  ],
+  "web_accessible_resources": [{
+    "resources": ["lib/chart.js"],
+    "matches": ["https://*.shein.com/*"]
+  }]
+}
+├── popup/
+│   ├── popup.html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SHEIN每日选品</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>< img src="../icons/icon48.png" alt="icon"> SHEIN每日选品</h1>
+    
+    <div class="date-controls">
+      <div>
+        <label for="start-date">开始日期:</label>
+        <input type="date" id="start-date">
+      </div>
+      <div>
+        <label for="end-date">结束日期:</label>
+        <input type="date" id="end-date">
+      </div>
+      <button id="refresh-btn">刷新数据</button>
+    </div>
+    
+    <div class="data-summary">
+      <div class="summary-card">
+        <h3>总销售额</h3>
+        <p id="total-sales">$0</p >
+        <p class="subtext" id="sales-change">--</p >
+      </div>
+      <div class="summary-card">
+        <h3>总订单数</h3>
+        <p id="total-orders">0</p >
+        <p class="subtext" id="orders-change">--</p >
+      </div>
+      <div class="summary-card">
+        <h3>平均单价</h3>
+        <p id="avg-price">$0</p >
+        <p class="subtext" id="price-change">--</p >
+      </div>
+    </div>
+    
+    <div class="chart-container">
+      <h3>每日销售趋势</h3>
+      <div id="sales-chart"></div>
+    </div>
+    
+    <div class="top-products">
+      <h3>热销商品TOP5</h3>
+      <table id="products-table">
+        <thead>
+          <tr>
+            <th>排名</th>
+            <th>商品名称</th>
+            <th>销售额</th>
+            <th>销量</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
+│   ├── popup.js
+// 生成详细的每日模拟数据
+function generateDailyData() {
+  const data = {};
+  const now = new Date();
+  
+  // 生成30天数据
+  for (let i = 0; i < 30; i++) {
+    const date = new Date(now);
+    date.setDate(now.getDate() - i);
+    const dateStr = date.toISOString().split('T')[0];
+    
+    // 基础销量 (周末较高)
+    const isWeekend = [0, 6].includes(date.getDay());
+    const baseSales = isWeekend ? 12000 : 8000;
+    
+    // 随机波动 (±30%)
+    const randomFactor = 0.7 + Math.random() * 0.6;
+    const dailySales = Math.round(baseSales * randomFactor);
+    
+    // 生成5个热销商品
+    const topProducts = [];
+    for (let j = 1; j <= 5; j++) {
+      const productSales = Math.round(dailySales * (0.3 - j * 0.05) * randomFactor);
+      topProducts.push({
+        id: `product_${dateStr}_${j}`,
+        name: `热销商品${j}`,
+        price: Math.round((10 + j * 5 + Math.random() * 10) * 100) / 100,
+        sales: productSales,
+        units: Math.round(productSales / (15 + Math.random() * 10))
+      });
+    }
+    
+    data[dateStr] = {
+      date: dateStr,
+      totalSales: dailySales,
+      totalOrders: Math.round(dailySales / (25 + Math.random() * 10)),
+      topProducts: topProducts,
+      categories: {
+        "女装": Math.round(dailySales * 0.4 * randomFactor),
+        "男装": Math.round(dailySales * 0.3 * randomFactor),
+        "配饰": Math.round(dailySales * 0.2 * randomFactor),
+        "家居": Math.round(dailySales * 0.1 * randomFactor)
+      }
+    };
+  }
+  
+  return data;
+}
+
+// 初始化插件
+document.addEventListener('DOMContentLoaded', () => {
+  // 设置默认日期范围 (最近7天)
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setDate(endDate.getDate() - 7);
+  
+  document.getElementById('start-date').valueAsDate = startDate;
+  document.getElementById('end-date').valueAsDate = endDate;
+  
+  // 检查并初始化数据
+  chrome.storage.local.get(['sheinDailyData'], (result) => {
+    if (!result.sheinDailyData) {
+      const initialData = generateDailyData();
+      chrome.storage.local.set({ sheinDailyData: initialData }, () => {
+        loadData(startDate, endDate);
+      });
+    } else {
+      loadData(startDate, endDate);
+    }
+  });
+  
+  // 刷新按钮事件
+  document.getElementById('refresh-btn').addEventListener('click', () => {
+    const start = document.getElementById('start-date').valueAsDate;
+    const end = document.getElementById('end-date').valueAsDate;
+    loadData(start, end);
+  });
+});
+
+// 加载并显示数据
+function loadData(startDate, endDate) {
+  chrome.storage.local.get(['sheinDailyData'], (result) => {
+    const allData = result.sheinDailyData || {};
+    const filteredData = filterDataByDate(allData, startDate, endDate);
+    
+    if (Object.keys(filteredData).length === 0) {
+      alert('所选日期范围内无数据');
+      return;
+    }
+    
+    displaySummary(filteredData);
+    renderChart(filteredData);
+    renderTopProducts(filteredData);
+  });
+}
+
+// 按日期筛选数据
+function filterDataByDate(data, startDate, endDate) {
+  const filtered = {};
+  const startStr = startDate.toISOString().split('T')[0];
+  const endStr = endDate.toISOString().split('T')[0];
+  
+  for (const date in data) {
+    if (date >= startStr && date <= endStr) {
+      filtered[date] = data[date];
+    }
+  }
+  
+  return filtered;
+}
+
+// 显示汇总数据
+function displaySummary(data) {
+  let totalSales = 0;
+  let totalOrders = 0;
+  const dates = Object.keys(data).sort();
+  
+  dates.forEach(date => {
+    totalSales += data[date].totalSales;
+    totalOrders += data[date].totalOrders;
+  });
+  
+  const avgPrice = totalSales / totalOrders;
+  
+  // 计算变化率 (与上一周期比较)
+  const prevPeriodData = getPreviousPeriodData(data);
+  const salesChange = prevPeriodData ? 
+    ((totalSales - prevPeriodData.totalSales) / prevPeriodData.totalSales * 100).toFixed(1) : 0;
+  const ordersChange = prevPeriodData ? 
+    ((totalOrders - prevPeriodData.totalOrders) / prevPeriodData.totalOrders * 100).toFixed(1) : 0;
+  const priceChange = prevPeriodData ? 
+    ((avgPrice - prevPeriodData.avgPrice) / prevPeriodData.avgPrice * 100).toFixed(1) : 0;
+  
+  // 更新UI
+  document.getElementById('total-sales').textContent = `$${totalSales.toLocaleString()}`;
+  document.getElementById('total-orders').textContent = totalOrders.toLocaleString();
+  document.getElementById('avg-price').textContent = `$${avgPrice.toFixed(2)}`;
+  
+  document.getElementById('sales-change').textContent = `${salesChange}%`;
+  document.getElementById('sales-change').className = salesChange >= 0 ? 'subtext positive' : 'subtext negative';
+  
+  document.getElementById('orders-change').textContent = `${ordersChange}%`;
+  document.getElementById('orders-change').className = ordersChange >= 0 ? 'subtext positive' : 'subtext negative';
+  
+  document.getElementById('price-change').textContent = `${priceChange}%`;
+  document.getElementById('price-change').className = priceChange >= 0 ? 'subtext positive' : 'subtext negative';
+}
+
+// 获取上一周期数据用于比较
+function getPreviousPeriodData(currentData) {
+  const dates = Object.keys(currentData).sort();
+  if (dates.length < 2) return null;
+  
+  const firstDate = new Date(dates[0]);
+  const lastDate = new Date(dates[dates.length - 1]);
+  const periodLength = (lastDate - firstDate) / (1000 * 60 * 60 * 24) + 1;
+  
+  const prevStart = new Date(firstDate);
+  prevStart.setDate(firstDate.getDate() - periodLength);
+  const prevEnd = new Date(firstDate);
+  prevEnd.setDate(firstDate.getDate() - 1);
+  
+  chrome.storage.local.get(['sheinDailyData'], (result) => {
+    const allData = result.sheinDailyData || {};
+    return filterDataByDate(allData, prevStart, prevEnd);
+  });
+  
+  return null;
+}
+
+// 渲染图表
+function renderChart(data) {
+  const dates = Object.keys(data).sort();
+  const salesData = dates.map(date => data[date].totalSales);
+  const ordersData = dates.map(date => data[date].totalOrders);
+  
+  const chartHtml = `
+    <canvas id="daily-chart" width="400" height="250"></canvas>
+  `;
+  
+  document.getElementById('sales-chart').innerHTML = chartHtml;
+  
+  // 使用简单图表库渲染
+  const ctx = document.getElementById('daily-chart').getContext('2d');
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: dates.map(date => date.split('-')[2] + '日'),
+      datasets: [
+        {
+          label: '销售额 ($)',
+          data: salesData,
+          borderColor: '#FF4E79',
+          backgroundColor: 'rgba(255, 78, 121, 0.1)',
+          yAxisID: 'y'
+        },
+        {
+          label: '订单数',
+          data: ordersData,
+          borderColor: '#6A5ACD',
+          backgroundColor: 'rgba(106, 90, 205, 0.1)',
+          yAxisID: 'y1',
+          type: 'bar'
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
+      scales: {
+        y: {
+          type: 'linear',
+          display: true,
+          position: 'left',
+          title: {
+            display: true,
+            text: '销售额 ($)'
+          }
+        },
+        y1: {
+          type: 'linear',
+          display: true,
+          position: 'right',
+          grid: {
+            drawOnChartArea: false
+          },
+          title: {
+            display: true,
+            text: '订单数'
+          }
+        }
+      }
+    }
+  });
+}
+
+// 渲染热销商品表格
+function renderTopProducts(data) {
+  const dates = Object.keys(data).sort();
+  const allProducts = [];
+  
+  // 收集所有商品
+  dates.forEach(date => {
+    data[date].topProducts.forEach(product => {
+      allProducts.push({
+        ...product,
+        date: date
+      });
+    });
+  });
+  
+  // 按销售额排序
+  allProducts.sort((a, b) => b.sales - a.sales);
+  
+  // 取TOP5
+  const top5 = allProducts.slice(0, 5);
+  
+  // 渲染表格
+  const tbody = document.querySelector('#products-table tbody');
+  tbody.innerHTML = '';
+  
+  top5.forEach((product, index) => {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${index + 1}</td>
+      <td>${product.name} (${product.date})</td>
+      <td>$${product.sales.toLocaleString()}</td>
+      <td>${product.units}</td>
+    `;
+    tbody.appendChild(row);
+  });
+}
+│   └── popup.css
+├── content/
+│   ├── content.js
+// 在SHEIN页面右下角添加分析按钮
+function injectPickerButton() {
+  if (document.getElementById('shein-picker-float-btn')) return;
+  
+  const btn = document.createElement('button');
+  btn.id = 'shein-picker-float-btn';
+  btn.innerHTML = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 3h18v18H3z"></path>
+      <path d="M18 8h1a2 2 0 0 1 2 2v1"></path>
+      <path d="M3 16h1a2 2 0 0 1 2 2v1"></path>
+      <line x1="8" y1="8" x2="16" y2="16"></line>
+      <line x1="8" y1="16" x2="16" y2="8"></line>
+    </svg>
+    <span>分析本页</span>
+  `;
+  
+  btn.addEventListener('click', () => {
+    analyzeCurrentPage();
+  });
+  
+  document.body.appendChild(btn);
+}
+
+// 分析当前页面商品
+function analyzeCurrentPage() {
+  const products = [];
+  const productElements = document.querySelectorAll('.S-product-item, .product-list__item');
+  
+  productElements.forEach((el, index) => {
+    try {
+      const name = el.querySelector('.product-name, .S-product-item__name')?.textContent?.trim() || `商品${index + 1}`;
+      const priceText = el.querySelector('.price, .S-product-item__price')?.textContent?.trim() || '0';
+      const price = parseFloat(priceText.replace(/[^0-9.]/g, ''));
+      const image = el.querySelector('img')?.src || '';
+      
+      // 模拟销量数据
+      const sales = Math.round(Math.random() * 500) + 50;
+      
+      products.push({
+        id: `page_${Date.now()}_${index}`,
+        name,
+        price,
+        image,
+        sales,
+        revenue: price * sales
+      });
+    } catch (e) {
+      console.error('解析商品失败:', e);
+    }
+  });
+  
+  if (products.length > 0) {
+    // 发送到后台页面显示
+    chrome.runtime.sendMessage({
+      action: 'showPageAnalysis',
+      data: {
+        date: new Date().toISOString().split('T')[0],
+        products,
+        totalSales: products.reduce((sum, p) => sum + p.revenue, 0),
+        totalOrders: products.reduce((sum, p) => sum + p.sales, 0)
+      }
+    });
+  } else {
+    alert('未找到商品数据，请确保您在SHEIN的商品列表页');
+  }
+}
+
+// 页面加载完成后注入按钮
+if (document.readyState === 'complete') {
+  injectPickerButton();
+} else {
+  window.addEventListener('load', injectPickerButton);
+}
+
+// 监听DOM变化动态注入按钮
+const observer = new MutationObserver(() => {
+  injectPickerButton();
+});
+
+observer.observe(document.body, {
+  childList: true,
+  subtree: true
+});
+│   └── content.css
+└── icons/
+    ├── icon16.png
+    ├── icon48.png
+    └── icon128.png
